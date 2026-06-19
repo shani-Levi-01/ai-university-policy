@@ -1,0 +1,411 @@
+---
+title: "Hypothesis 2"
+author: "Shani"
+date: "2026-06-19"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Load & clean
+
+טעינת הקובץ ובדיקת איות ונתונים
+מציאת כמות האונברסיטות בהן הסילבוס לא נגיש לציבור
+```{r}
+df <- read.csv("data/universities_ai_policy.csv",
+               stringsAsFactors = FALSE, encoding = "UTF-8", fill = TRUE)
+
+df <- df[-1, ]
+df <- df[!is.na(df$university) & trimws(df$university) != "", ]
+df <- df[!grepl("unknown", df$university, ignore.case = TRUE), ]
+
+dim(df)
+head(df)
+```
+ניקיון הנתונים 
+```{r normalize}
+# ניקוי ערכים: אותיות קטנות, רווחים, ותיקון השגיאה "unknowen"
+clean <- function(x) trimws(tolower(gsub("unknowen", "unknown", x)))
+cols <- c("requires_ai_disclosure", "enforce_penalties",
+          "genai_allowed_general_use",
+          "cs_ai_policy_specified", "cs_ai_restriction_level",
+          "cs_allowd_homework", "cs_allowed_exams",
+          "ds_ai_policy_specifies", "ds_ai_restriction_level",
+          "ds_allowd_homework", "ds_allowed_exams")
+df[cols] <- lapply(df[cols], clean)
+n <- nrow(df)
+```
+## Hypothesis 2 — Institution-level policy vs. core-course transparency
+
+Because core courses ("Introduction to Computer Science" and "Data Structures") build students' foundational logical and programming skills, we expected these courses to enforce stricter and more clearly stated AI rules than the general institution-level policy.
+
+
+## Institution level — near-universal
+
+```{r institution}
+disclosure <- sum(df$requires_ai_disclosure == "yes", na.rm = TRUE)
+enforce    <- sum(df$enforce_penalties     == "yes", na.rm = TRUE)
+cat("Disclosure required:", disclosure, "/", n, "\n")
+cat("Penalties enforced :", enforce,     "/", n, "\n")
+```
+> **Conclusion:** All 39 universities, without exception, require disclosure of AI use and enforce penalties for violations — institution-level transparency and enforcement are universal.
+
+
+## Course level — restriction is mostly unknown
+
+```{r restriction}
+cat("CS — restriction level:\n")
+print(table(df$cs_ai_restriction_level, useNA = "ifany"))
+
+cat("\nDS — restriction level:\n")
+print(table(df$ds_ai_restriction_level, useNA = "ifany"))
+```
+
+```{r unknown-rate}
+cs_unknown <- mean(is.na(df$cs_ai_restriction_level) |
+                   df$cs_ai_restriction_level == "unknown")
+cat(sprintf("CS restriction unknown/unpublished: %.0f%%\n", 100 * cs_unknown))
+```
+> **Conclusion:** Core-course AI restriction is dominated not by strict rules but by *absence of public information*: the restriction level is unknown for `r round(100 * cs_unknown)`% of "Intro to CS" courses (and even more for Data Structures), so a clear, stricter course-level rule largely cannot be observed.
+
+```{r}
+mk <- function(col, course) {
+  v <- col; v[is.na(v) | v == ""] <- "unknown"
+  d <- as.data.frame(table(v)); names(d) <- c("level", "count")
+  d$course <- course; d
+}
+rest <- rbind(mk(df$cs_ai_restriction_level, "Intro to CS"),
+              mk(df$ds_ai_restriction_level, "Data Structures"))
+# סדר הגיוני: מהמתיר לאוסר, ואז unknown בסוף
+ord <- c("open", "allowed", "reasonable", "restricted", "prohibited", "unknown")
+rest$level <- factor(rest$level, levels = ord)
+
+ggplot(rest, aes(level, count, fill = level)) +
+  geom_col(width = 0.7) +
+  facet_wrap(~course) +
+  scale_fill_manual(values = c(
+    "open" = "#7FB3A6", "allowed" = "#9CC4B2", "reasonable" = "#C9D9A8",
+    "restricted" = "#E8B98C", "prohibited" = "#D98E73", "unknown" = "#C9C5BE")) +
+  labs(title = "Course-level AI restriction is dominated by 'unknown'",
+       x = NULL, y = "Universities") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 35, hjust = 1),
+        plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        strip.text = element_text(face = "bold"))
+```
+
+נבדוק מה קורה בתוך המקצועות שבהן כן יש פירוט(מדגם קטן מאוד)
+
+```{r}
+# פונקציה: משאירה רק ערכים ידועים (לא unknown, לא NA), אחרי ניקוי
+known <- function(col) {
+  x <- trimws(tolower(gsub("unknowen", "unknown", col)))
+  x <- x[!is.na(x) & x != "unknown" & x != ""]
+  x
+}
+
+show_dist <- function(col, label) {
+  x <- known(col)
+  cat("===", label, "— known only (n =", length(x), ") ===\n")
+  tab <- sort(table(x), decreasing = TRUE)
+  pct <- round(100 * tab / length(x))
+  print(data.frame(count = as.integer(tab),
+                   pct   = paste0(pct, "%"),
+                   row.names = names(tab)))
+  cat("\n")
+}
+
+# רמת ההגבלה הכללית בקורס
+show_dist(df$cs_ai_restriction_level, "CS restriction level")
+show_dist(df$ds_ai_restriction_level, "DS restriction level")
+
+# מבחנים ושיעורי בית ב-CS
+show_dist(df$cs_allowed_exams,   "CS exams")
+show_dist(df$cs_allowd_homework, "CS homework")
+```
+> **Conclusion:** Among courses with a known policy, restriction is **not** uniformly strict: the overall course-level rule is split between prohibited, restricted, and allowed (CS: 38% / 38% / 23%). The one sharp pattern is at **exams**, where `r round(100*10/12)`% prohibit AI — whereas homework is evenly split between conditional and prohibited use. In other words, core courses tend to permit *supervised* AI use during the course while drawing a firm line at exams, rather than banning it outright. Given the small number of disclosed courses (n ≈ 12–13), this is suggestive rather than conclusive.
+
+## Where enforcement *does* appear — only at exams
+```{r exams}
+# פונקציה: אחוז ה-prohibited מתוך הידועים בלבד (מנקה unknowen / unknown / ריק)
+exam_summary <- function(col, label) {
+  x <- trimws(tolower(gsub("unknowen", "unknown", col)))
+  x <- x[!is.na(x) & x != "unknown" & x != ""]     # רק ידועים
+  n_known <- length(x)
+  n_proh  <- sum(x == "prohibited")
+  cat(sprintf("%s — known: %d | prohibited: %d (%.0f%%)\n",
+              label, n_known, n_proh, 100 * n_proh / n_known))
+  print(sort(table(x), decreasing = TRUE))
+  cat("\n")
+  invisible(c(known = n_known, prohibited = n_proh))
+}
+
+cs_ex <- exam_summary(df$cs_allowed_exams, "Intro to CS — exams")
+ds_ex <- exam_summary(df$ds_allowed_exams, "Data Structures — exams")
+```
+```{r}
+exam_stats <- function(col, course) {
+  x <- col; x[x == "no"] <- "prohibited"
+  x <- x[!is.na(x) & x != "unknown" & x != ""]
+  data.frame(course = course,
+             prohibited = sum(x == "prohibited"),
+             other = sum(x != "prohibited"),
+             known = length(x))
+}
+ex <- rbind(exam_stats(df$cs_allowed_exams, "Intro to CS"),
+            exam_stats(df$ds_allowed_exams, "Data Structures"))
+
+ex_long <- data.frame(
+  course = rep(ex$course, 2),
+  rule   = rep(c("Prohibits AI", "Allows / conditional"), each = 2),
+  count  = c(ex$prohibited, ex$other))
+
+ggplot(ex_long, aes(course, count, fill = rule)) +
+  geom_col(width = 0.55) +
+  geom_text(aes(label = count), position = position_stack(vjust = 0.5),
+            color = "white", size = 4.5) +
+  scale_fill_manual(values = c("Prohibits AI" = "#D98E73",
+                               "Allows / conditional" = "#7FB3A6")) +
+  labs(title = "At exams, the majority prohibit AI",
+       subtitle = "Among courses with a known exam policy",
+       x = NULL, y = "Universities", fill = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        plot.subtitle = element_text(color = "#8A8A8A"),
+        legend.position = "top")
+```
+
+```{r}
+# מאחדים את מבחני שני הקורסים לכדי "טוטאל" אחד
+both <- c(df$cs_allowed_exams, df$ds_allowed_exams)
+both <- trimws(tolower(gsub("unknowen", "unknown", both)))
+both <- both[!is.na(both) & both != "unknown" & both != ""]   # רק ידועים
+
+# מאחדים "no" עם "prohibited" (אותה משמעות: אסור)
+both[both == "no"] <- "prohibited"
+
+n_total  <- length(both)
+n_proh   <- sum(both == "prohibited")
+cat(sprintf("TOTAL (both core courses) — known: %d | prohibited: %d (%.0f%%)\n",
+            n_total, n_proh, 100 * n_proh / n_total))
+print(sort(table(both), decreasing = TRUE))
+```
+> **Conclusion:** Across both core courses, AI is prohibited in `r n_proh` of `r n_total` disclosed exam policies (`r round(100*n_proh/n_total)`%) — counting each course separately (up to two per university). This is a clear, consistent line at the point of assessment, unlike the mixed rules for the course as a whole.
+
+
+## The gap + significance test
+```{r gap-test}
+# "published" = at least one core course states an accessible policy
+published <- sum(df$cs_ai_policy_specified == "yes" |
+                 df$ds_ai_policy_specifies == "yes", na.rm = TRUE)
+cat("Policy published for >=1 core course:", published, "/", n, "\n")
+
+# test: is course-level publication significantly lower than the
+# institution-level disclosure baseline?
+bt <- binom.test(published, n, p = disclosure / n, alternative = "less")
+print(bt)
+```
+```{r}
+# רמת המוסד: דרישה ואכיפה גורפות
+disclosure <- sum(df$requires_ai_disclosure == "yes", na.rm = TRUE)
+enforce    <- sum(df$enforce_penalties     == "yes", na.rm = TRUE)
+
+# רמת הקורס הספציפי: כמה בכלל מפרסמים מדיניות נגישה
+published <- sum(df$cs_ai_policy_specified == "yes" |
+                 df$ds_ai_policy_specifies == "yes", na.rm = TRUE)
+not_published <- n - published
+
+cat("Institution level:\n")
+cat("  Require disclosure :", disclosure, "/", n,
+    sprintf("(%.0f%%)\n", 100 * disclosure / n))
+cat("  Enforce penalties  :", enforce, "/", n,
+    sprintf("(%.0f%%)\n", 100 * enforce / n))
+
+cat("\nCore-course level:\n")
+cat("  Publish accessible policy    :", published, "/", n,
+    sprintf("(%.0f%%)\n", 100 * published / n))
+cat("  Do NOT publish for the course:", not_published, "/", n,
+    sprintf("(%.0f%%)\n", 100 * not_published / n))
+```
+> **Conclusion:** A clear contrast emerges between policy and practice. Every university requires disclosure of AI use (`r disclosure`/`r n`) and enforces penalties for violations (`r enforce`/`r n`) — yet for the specific core courses, `r not_published` of `r n` (`r round(100*not_published/n)`%) publish no accessible AI policy at all. The institution-level demand for transparency and accountability is not reflected at the level of the courses where it would matter most.
+
+```{r}
+if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+library(ggplot2)
+
+gap <- data.frame(
+  stage = factor(c("Requires disclosure\n(institution)",
+                   "Enforces penalties\n(institution)",
+                   "Publishes policy\n(core course)"),
+                 levels = c("Requires disclosure\n(institution)",
+                            "Enforces penalties\n(institution)",
+                            "Publishes policy\n(core course)")),
+  count = c(disclosure, enforce, published))
+gap$pct <- round(100 * gap$count / n)
+gap$level <- c("Institution", "Institution", "Course")
+
+ggplot(gap, aes(stage, count, fill = level)) +
+  geom_col(width = 0.62) +
+  geom_text(aes(label = paste0(count, "/", n, " (", pct, "%)")),
+            vjust = -0.4, size = 4, color = "#444444") +
+  scale_y_continuous(limits = c(0, n + 5), expand = c(0, 0)) +
+  scale_fill_manual(values = c("Institution" = "#4E7C8A", "Course" = "#E0916B")) +
+  labs(title = "The transparency gap: institution vs. core course",
+       x = NULL, y = "Number of universities") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        panel.grid.major.x = element_blank())
+```
+
+מי כן טורח לפרסם?
+```{r}
+df$published <- (tolower(df$cs_ai_policy_specified) == "yes") |
+                (tolower(df$ds_ai_policy_specifies) == "yes")
+
+# Ivy League מול פרסום
+cat("Publishing rate by Ivy League status:\n")
+ivy_tab <- table(df$`Ivy.League`, df$published)
+print(ivy_tab)
+cat(sprintf("  Ivy: %.0f%% publish | non-Ivy: %.0f%% publish\n\n",
+    100*mean(df$published[tolower(df$`Ivy.League`)=="yes"]),
+    100*mean(df$published[tolower(df$`Ivy.League`)!="yes"])))
+
+# דירוג עולמי: חציון
+df$world_rank <- as.numeric(df$world_rank)
+cat("Median world rank:\n")
+cat(sprintf("  Publishers    : %g\n", median(df$world_rank[df$published], na.rm=TRUE)))
+cat(sprintf("  Non-publishers: %g\n", median(df$world_rank[!df$published], na.rm=TRUE)))
+```
+```{r}
+if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+library(ggplot2)
+
+df$published <- (tolower(trimws(df$cs_ai_policy_specified)) == "yes") |
+                (tolower(trimws(df$ds_ai_policy_specifies)) == "yes")
+df$world_rank <- as.numeric(df$world_rank)
+
+pdat <- df[!is.na(df$world_rank), ]
+pdat$status <- ifelse(pdat$published,
+                      "Publishes core-course policy", "Does not publish")
+
+pal <- c("Publishes core-course policy" = "#4E7C8A",   # ירקרק-מרווה רגוע
+         "Does not publish"             = "#E0916B")   # כתום-אפרסק חמים
+
+ggplot(pdat, aes(x = world_rank, y = status, color = status)) +
+  geom_point(size = 3, alpha = 0.85)  +
+  scale_x_continuous(trans = "log10", breaks = c(1, 5, 10, 25, 50, 100, 300))  +
+  scale_color_manual(values = pal) +
+  labs(title = "Core-course AI policy publication vs. world rank",
+       subtitle = "Each dot is a university (lower rank = more prestigious)",
+       x = "World rank (CWUR, log scale)", y = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        plot.subtitle = element_text(color = "#8A8A8A"),
+        axis.text = element_text(color = "#5A5A5A"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())
+```
+
+
+```{r}
+pal <- c("Publishes core-course policy" = "#4E7C8A",   # כחול-מרווה רגוע
+         "Does not publish"             = "#E0916B")   # כתום-אפרסק חמים
+
+ggplot(pdat, aes(x = status, y = world_rank, fill = status)) +
+  geom_boxplot(width = 0.5, alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.12, size = 2, alpha = 0.7) +
+  scale_y_continuous(trans = "log10", breaks = c(1, 3, 10, 30, 100, 300)) +
+  scale_fill_manual(values = pal) +
+  labs(title = "Publishers cluster at the top of the ranking",
+       x = NULL, y = "World rank (CWUR, log scale)") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+
+
+## Conclusion — Hypothesis 2
+
+> Contrary to our hypothesis, core courses do **not** enforce stricter or more
+> transparent AI rules than the general institutional policy. At the institution
+> level, transparency and accountability are universal: all `r n` universities
+> require disclosure of AI use and enforce penalties. Yet at the level of the
+> core courses, the AI restriction level is unpublished or inaccessible for about
+> half of them, and among those that do disclose, the rules are mixed rather than
+> uniformly strict. The single consistent pattern is at **exams**, where the
+> majority prohibit AI use. We therefore reject the hypothesis: rather than being
+> the most tightly and clearly governed, foundational courses are in fact the
+> least publicly specified — with explicit enforcement concentrated narrowly at
+> the point of assessment.
+## Including Plots
+
+ננסה לבדוק בין אלו שכן ענו האם יש מגמה כלשהי שתאפשר לצפות את אלו שהסילבוס שלהן לא מפורסם
+```{r}
+if (!requireNamespace("ggplot2", quietly = TRUE)) install.packages("ggplot2")
+library(ggplot2)
+
+cl <- function(x) trimws(tolower(gsub("unknowen", "unknown", x)))
+lvl <- cl(df$cs_ai_restriction_level)
+keep <- !is.na(lvl) & lvl != "unknown" & lvl != ""
+sub <- df[keep, ]
+sub$world_rank <- as.numeric(sub$world_rank)
+mp <- c(open = "Allowed", allowed = "Allowed", reasonable = "Restricted",
+        restricted = "Restricted", prohibited = "Prohibited")
+sub$level <- factor(mp[lvl[keep]],
+                    levels = c("Allowed", "Restricted", "Prohibited"))
+
+pal3 <- c("Allowed" = "#7FB3A2", "Restricted" = "#E0B53D", "Prohibited" = "#D98E79")
+
+ggplot(sub, aes(x = world_rank, y = level, color = level)) +
+  geom_point(size = 4, alpha = 0.85) +
+  scale_x_continuous(trans = "log10", breaks = c(1, 3, 10, 30, 100, 300)) +
+  scale_color_manual(values = pal3) +
+  labs(title = "ourse restriction vs. world rank",
+       subtitle = "Among the 13 universities with a disclosed CS course policy",
+       x = "World rank (CWUR, log scale)", y = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        plot.subtitle = element_text(color = "#8A8A8A"),
+        panel.grid.minor = element_blank())
+```
+```{r}
+install.packages("ggplot2")
+library(ggplot2)
+
+cl <- function(x) trimws(tolower(gsub("unknowen", "unknown", x)))
+lvl <- cl(df$cs_ai_restriction_level)
+keep <- !is.na(lvl) & lvl != "unknown" & lvl != ""
+sub <- df[keep, ]
+mp <- c(open = "Allowed", allowed = "Allowed", reasonable = "Restricted",
+        restricted = "Restricted", prohibited = "Prohibited")
+sub$level <- factor(mp[lvl[keep]], levels = c("Allowed", "Restricted", "Prohibited"))
+sub$ivy <- ifelse(cl(sub$Ivy.League) == "yes", "Ivy League", "Non-Ivy")
+
+pal3 <- c("Allowed" = "#7FB3A6", "Restricted" = "#E0B57D", "Prohibited" = "#D98E73")
+
+ggplot(sub, aes(x = level, fill = level)) +
+  geom_bar(width = 0.65) +
+  geom_text(stat = "count", aes(label = after_stat(count)),
+            vjust = -0.4, size = 4.2, color = "#444444") +
+  facet_wrap(~ivy) +
+  scale_y_continuous(breaks = 0:5, expand = expansion(mult = c(0, 0.12))) +
+  scale_fill_manual(values = pal3) +
+  labs(title = "Course restriction level by Ivy status",
+       subtitle = "Counts among the 13 universities with a disclosed CS policy",
+       x = NULL, y = "Universities") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", color = "#3A3A3A"),
+        plot.subtitle = element_text(color = "#8A8A8A"),
+        strip.text = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+```
+Within the small set of universities that disclose a course-level policy, no institutional characteristic we examined is clearly associated with the course's AI restriction level. We emphasize that this reflects the absence of a detectable pattern given very few disclosed cases — not evidence that no relationship exists.
+
